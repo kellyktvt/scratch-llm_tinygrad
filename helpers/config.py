@@ -1,19 +1,5 @@
 from dataclasses import dataclass
 
-import torch
-
-
-def get_device():
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-
-    return device
-
-
 @dataclass
 class LLMConfig:
     vocab_size: int = 1024
@@ -29,7 +15,6 @@ class LLMConfig:
 @dataclass
 class TrainingConfig:
     retrain_tokenizer: bool = False
-    device: torch.device = get_device()
     batch_size: int = 64
     learning_rate: float = 1e-4
     weight_decay: float = 1e-2

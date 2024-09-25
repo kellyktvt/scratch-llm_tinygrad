@@ -1,70 +1,93 @@
-import torch
-import torch.nn.functional as F
-from torch import Tensor
-from torch.nn import Dropout, Embedding, Linear, Module, Sequential
-
+from tinygrad import Tensor, nn
+# Import components from 'model.tansformer' module
 from model.transformer import RMSNorm, TransformerBlock
 
-
+# Function that takes probabilities and a threshold for top-p sampling
 def sample_top_p(probs: Tensor, threshold: float) -> Tensor:
-    sorted_probs, sorted_indices = torch.sort(probs, descending=True)  # (bs, vocab_size), (bs, vocab_size)
-    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)  # (bs, vocab_size)
+    # Sort probabilities in descending order along the last dimension & also return corresponding indices
+    sorted_probs, sorted_indices = Tensor.sort(probs, descending=True)  # (bs, vocab_size), (bs, vocab_size)
+    # Compute cumulative sums along the last dimension
+    cumulative_probs = Tensor.cumsum(sorted_probs, dim=-1)  # (bs, vocab_size)
 
+    # Create mask to filter out probabilities
     mask = cumulative_probs > threshold
-    sorted_probs[mask] = 0.0  # virtually discard tokens with lower probability
+    # virtually discard tokens with lower probability
+    sorted_probs[mask] = 0.0  
+    # Normalize probabilities to sum to 1.0
     sorted_probs /= sorted_probs.sum(dim=-1, keepdim=True)  # rescale to sum to 1.0
 
-    next_token = torch.multinomial(sorted_probs, num_samples=1)
-    next_token = torch.gather(sorted_indices, dim=-1, index=next_token)
+    # Sample indices based on normalized probabilities
+    next_token = Tensor.multinomial(sorted_probs, num_samples=1)
+    # Retrieve token indices corresponding to sampled probabilities
+    next_token = Tensor.gather(sorted_indices, dim=-1, index=next_token)
 
+    # Returns index of next token to be generated
     return next_token
 
-
-class LLM(Module):
+class LLM:
+    # Initialize the model with params
     def __init__(
-        self,
-        vocab_size: int,
-        seq_len: int,
-        dim_emb: int,
-        num_layers: int,
-        attn_num_heads: int,
-        ffn_hidden_dim: int,
-        ffn_bias: bool = False,
-        emb_dropout: float = 0.0,
+        self, # Size of vocabulary
+        vocab_size: int, # Length of input sequence
+        seq_len: int, # Dimensionality of token embeddings
+        dim_emb: int, # Number of transformer layers
+        num_layers: int, # Number of attention heads in the transformer
+        attn_num_heads: int, # Dimensionality of the feedforward network hidden layers
+        ffn_hidden_dim: int, # Whether to use bias in feedforward layers
+        ffn_bias: bool = False, # Dropout probability for token embeddings
+        emb_dropout: float = 0.0, # Indicates method doesn't return anything
     ) -> None:
-        super().__init__()
 
+        # Store input sequence length
         self.seq_len = seq_len
+        # Initialize embedding layer mapping tokens to 'dim_emb' dimensions
         self.token_embedding = Embedding(vocab_size, dim_emb)
+        # Initialize dropout layer appled to token embeddings w/ dropout probability
         self.emb_dropout = Dropout(emb_dropout)
+        # Initialize empty sequential container for stacking transformer blocks
         self.transformer = Sequential()
 
+        # Iteratively append 'num_layers' instances of 'TransformerBlock' to 'self.transformer'
         for _ in range(num_layers):
             self.transformer.append(TransformerBlock(seq_len, dim_emb, attn_num_heads, ffn_hidden_dim, ffn_bias))
 
+        # Initialize RMS normalization for normalizing transformer output w/ 'dim_emb' dimensions
         self.norm = RMSNorm(dim_emb)
+        # Initialize linear layer projecting 'dim_emb' dimensions to 'vocab_size' dimensions
         self.projection_head = Linear(dim_emb, vocab_size)
 
+        # Weight tying links embedding layer and output projection together to share parameters
+        # Which can enhance training efficiency and model performance
         # https://paperswithcode.com/method/weight-tying
         self.token_embedding.weight = self.projection_head.weight
 
-    def forward(self, x: Tensor) -> Tensor:
-        x = self.token_embedding(x)  # (bs, seq_len, dim_emb)
+    # Method defining the data flow through the model during the forward pass
+    def __call__(self, x: Tensor) -> Tensor:
+        # Embeds input tokens (x) using initialized embedding layer (self.token_embedding)
+        x = self.token_embedding(x)  # resulting shape: (batch_size, seq_len, dim_emb)
+        # Applies dropout to embedded tokens (x) to prevent overfitting during training
         x = self.emb_dropout(x)  # (bs, seq_len, dim_emb)
+        # Passes token embeddings (x) through stacked transformer blocks (self.transformer)
         x = self.transformer(x)  # (bs, seq_len, dim_emb)
+        # Normalizes transformer output (x) using RMS normalization (self.norm)
         x = self.norm(x)  # (bs, seq_len, dim_emb)
-        x = self.projection_head(x)  # (bs, seq_len, vocab_size)
+        # Projects normalized output (x) to obtain logits over the vocabulary (vocab_size)
+        x = self.projection_head(x)  # (bs, seq_len, vocab_size) - represents the logits for each token in the vocab
 
+        # Returns the logits for each token in the vocabulary
         return x  # (bs, seq_len, vocab_size)
 
-    @torch.inference_mode()
+    
+    # Decorator that ensures model is in inference mode
+    Tensor.training = False
+    # Method that generates a sequence of tokens using the model given an initial input sequence 
     def generate(
-        self,
-        inputs: Tensor,
-        max_seq_len: int,
-        stop_tokens: set | None = None,
-        temperature: float = 0.6,
-        top_p: int = 0.8,
+        self, 
+        inputs: Tensor, # Initial input sequence tensor
+        max_seq_len: int, # Maximum sequence length to generate
+        stop_tokens: set | None = None, # Set of tokens to stop generation at
+        temperature: float = 0.6, # Controls sampling randomness - higher values increase diversity
+        top_p: int = 0.8, # Threshhold parameter for top-p sampling, controlling subset of tokens considered for sampling
     ) -> Tensor:
         for _ in range(max_seq_len):
             # make sure the sequence we're generating doesn't exceed model's sequence length
@@ -82,6 +105,7 @@ class LLM(Module):
                 break
 
             # append to the sequence being generated
-            inputs = torch.cat((inputs, next_token), dim=-1)
+            inputs = Tensor.cat((inputs, next_token), dim=-1)
 
+        # return generated sequence after removing any singleton dimensions and moving it to the CPU
         return inputs.squeeze().cpu()
