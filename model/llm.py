@@ -1,5 +1,5 @@
 from tinygrad import Tensor, nn
-# Import components from 'model.tansformer' module
+from tinygrad.nn import Embedding, Linear
 from model.transformer import RMSNorm, TransformerBlock
 
 # Function that takes probabilities and a threshold for top-p sampling
@@ -27,30 +27,28 @@ def sample_top_p(probs: Tensor, threshold: float) -> Tensor:
 class LLM:
     # Initialize the model with params
     def __init__(
-        self, # Size of vocabulary
-        vocab_size: int, # Length of input sequence
-        seq_len: int, # Dimensionality of token embeddings
-        dim_emb: int, # Number of transformer layers
-        num_layers: int, # Number of attention heads in the transformer
-        attn_num_heads: int, # Dimensionality of the feedforward network hidden layers
-        ffn_hidden_dim: int, # Whether to use bias in feedforward layers
-        ffn_bias: bool = False, # Dropout probability for token embeddings
-        emb_dropout: float = 0.0, # Indicates method doesn't return anything
-    ) -> None:
+        self,
+        vocab_size: int, # Size of vocabulary
+        seq_len: int, # Length of input sequence
+        dim_emb: int, # Dimensionality of token embeddings
+        num_layers: int, # Number of transformer layers
+        attn_num_heads: int, # Number of attention heads in the transformer
+        ffn_hidden_dim: int, # Dimensionality of the feedforward network hidden layers
+        ffn_bias: bool = False, # Whether to use bias in feedforward layers
+        emb_dropout: float = 0.0, # Dropout probability for token embeddings
+    ) -> None: # Indicates method doesn't return anything
 
         # Store input sequence length
         self.seq_len = seq_len
         # Initialize embedding layer mapping tokens to 'dim_emb' dimensions
         self.token_embedding = Embedding(vocab_size, dim_emb)
         # Initialize dropout layer appled to token embeddings w/ dropout probability
-        self.emb_dropout = Dropout(emb_dropout)
-        # Initialize empty sequential container for stacking transformer blocks
-        self.transformer = Sequential()
-
-        # Iteratively append 'num_layers' instances of 'TransformerBlock' to 'self.transformer'
-        for _ in range(num_layers):
-            self.transformer.append(TransformerBlock(seq_len, dim_emb, attn_num_heads, ffn_hidden_dim, ffn_bias))
-
+        self.emb_dropout = emb_dropout
+        # Create a list of TransformerBlocks instead of a Sequential object
+        self.transformer_blocks = [
+            TransformerBlock(seq_len, dim_emb, attn_num_heads, ffn_hidden_dim, ffn_bias)
+            for _ in range(num_layers)
+        ]
         # Initialize RMS normalization for normalizing transformer output w/ 'dim_emb' dimensions
         self.norm = RMSNorm(dim_emb)
         # Initialize linear layer projecting 'dim_emb' dimensions to 'vocab_size' dimensions
@@ -66,9 +64,9 @@ class LLM:
         # Embeds input tokens (x) using initialized embedding layer (self.token_embedding)
         x = self.token_embedding(x)  # resulting shape: (batch_size, seq_len, dim_emb)
         # Applies dropout to embedded tokens (x) to prevent overfitting during training
-        x = self.emb_dropout(x)  # (bs, seq_len, dim_emb)
-        # Passes token embeddings (x) through stacked transformer blocks (self.transformer)
-        x = self.transformer(x)  # (bs, seq_len, dim_emb)
+        x = x.dropout(self.emb_dropout)
+        # Use the sequential method to apply transformer blocks
+        x = x.sequential(self.transformer_blocks)
         # Normalizes transformer output (x) using RMS normalization (self.norm)
         x = self.norm(x)  # (bs, seq_len, dim_emb)
         # Projects normalized output (x) to obtain logits over the vocabulary (vocab_size)

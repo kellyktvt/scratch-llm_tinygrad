@@ -20,5 +20,4 @@ class NextTokenPredictionDataset:
         return len(self.data) - (self.context_size + 1)
 
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
-        # inputs, labels
         return self.data[idx : idx + self.context_size], self.data[idx + 1 : idx + self.context_size + 1]

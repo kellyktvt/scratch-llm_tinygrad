@@ -3,19 +3,19 @@ import multiprocessing
 import queue
 from itertools import cycle
 from tinygrad.tensor import Tensor
-from tinygrad import dtypes
 
 
 def default_collate(batch):
+    # check if batch contains tuples of length 2 (input, label)
     if isinstance(batch[0], tuple) and len(batch[0]) == 2:
+        # separate inputs and labels
         inputs, labels = zip(*batch)
+        # stack inputs and labels separately
         return Tensor.stack(*inputs), Tensor.stack(*labels)
-    elif isinstance(batch[0], Tensor):
+    # check if batch contains Tensor objects
+    if isinstance(batch[0], Tensor):
+        # stack tensors
         return Tensor.stack(*batch)
-    elif isinstance(batch[0], (int, float)):
-        return Tensor(batch, dtype=dtypes.float)
-    else:
-        raise TypeError(f"Batch contains unsupported type: {type(batch[0])}")
 
 
 class NaiveDataLoader:
@@ -32,21 +32,13 @@ class NaiveDataLoader:
     def __next__(self):
         if self.index >= len(self.dataset):
             raise StopIteration
-        
-        end_idx = min(self.index + self.batch_size, len(self.dataset))
-        batch = self.collate_fn([self.get() for _ in range(self.index, end_idx)])
-        
-        self.index = end_idx
-        return batch
+        batch_size = min(len(self.dataset) - self.index, self.batch_size)
+        return self.collate_fn([self.get() for _ in range(batch_size)])
 
     def get(self):
         item = self.dataset[self.index]
         self.index += 1
         return item
-    
-    def __len__(self):
-        return len(self.dataset) // self.batch_size + (1 if len(self.dataset) % self.batch_size > 0 else 0)
-
 
 
 def worker_fn(dataset, index_queue, output_queue):
@@ -73,8 +65,6 @@ class DataLoader(NaiveDataLoader):
         shuffle=False,
     ):
         super().__init__(dataset, batch_size, collate_fn)
-
-        print(f"Initializing DataLoader with batch_size: {batch_size}, num_workers: {num_workers}")
 
         self.num_workers = num_workers
         self.prefetch_batches = prefetch_batches
@@ -140,19 +130,25 @@ class DataLoader(NaiveDataLoader):
         self.index += 1
         return item
 
+    def __next__(self):
+        if self.index >= len(self.dataset):
+            raise StopIteration
+        batch_size = min(len(self.dataset) - self.index, self.batch_size)
+        batch = [self.get() for _ in range(batch_size)]
+        
+        return self.collate_fn(batch)
+
     def __del__(self):
         try:
-            if hasattr(self, 'workers'):
-                for i, w in enumerate(self.workers):
-                    self.index_queues[i].put(None)
-                    w.join(timeout=5.0)
-                for q in self.index_queues:
-                    q.cancel_join_thread()
-                    q.close()
-                self.output_queue.cancel_join_thread()
-                self.output_queue.close()
+            for i, w in enumerate(self.workers):
+                self.index_queues[i].put(None)
+                w.join(timeout=5.0)
+            for q in self.index_queues:
+                q.cancel_join_thread()
+                q.close()
+            self.output_queue.cancel_join_thread()
+            self.output_queue.close()
         finally:
-            if hasattr(self, 'workers'):
-                for w in self.workers:
-                    if w.is_alive():
-                        w.terminate()
+            for w in self.workers:
+                if w.is_alive():
+                    w.terminate()
