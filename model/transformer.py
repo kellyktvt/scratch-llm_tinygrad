@@ -1,8 +1,9 @@
 from typing import Tuple
-from tinygrad import Tensor, nn, dtypes
-import numpy as np
 
-# Specify machine epsilon for float32
+from tinygrad import Tensor, dtypes
+from tinygrad.nn import RMSNorm
+
+# Specify machine epsilon for 'Tensor.float32'
 EPS = Tensor([1.1920929e-07], dtype=dtypes.float32).item()
 
 
@@ -15,21 +16,22 @@ class RotaryPositionalEncoding():
         super().__init__()
 
         self.dim_emb = dim_emb
-        # Generates 'indices' as a torch tensor repping positions in the seq
-        indices = Tensor.arange(0, seq_len, dtype=dtypes.float)
+        # Generates 'indices' as a Tensor tensor repping positions in the seq
+        indices = Tensor.arange(0, seq_len, dtype=dtypes.float32)
         # Computes'scale' vals for scaling rotations based on 'base' and 'dim_emb'
-        scale = 1 / (base ** (Tensor.arange(0, dim_emb, 2, dtype=dtypes.float) / dim_emb) + eps)
+        scale = 1 / (base ** (Tensor.arange(0, dim_emb, 2, dtype=dtypes.float32) / dim_emb) + eps)
 
         # Construct 'position' tensor by outer product of 'indices' and 'scale'
-        indices_reshaped = indices.reshape(seq_len, 1)
-        scale_reshaped = scale.reshape(1, -1)
-        position = indices_reshaped * scale_reshaped
-
-        position = Tensor.cat(position, position, dim=-1)
+        position = indices.reshape(-1, 1) * scale.reshape(1, -1) 
+        # , concatenated along the last dimension
+        position = Tensor.cat([position, position], dim=-1)
 
         # Compute 'position_cos' and 'position_sin' tensors using cosine and sine fxns applied to 'position'
-        self.position_cos = Tensor.cos(position[None, None, :, :])  # (bs, num_heads, seq_len, dim_emb)
-        self.position_sin = Tensor.sin(position[None, None, :, :])  # (bs, num_heads, seq_len, dim_emb)
+        position_cos = Tensor.cos(position[None, None, :, :])  # (bs, num_heads, seq_len, dim_emb)
+        position_sin = Tensor.sin(position[None, None, :, :])  # (bs, num_heads, seq_len, dim_emb)
+
+        self.register_buffer("position_cos", position_cos)
+        self.register_buffer("position_sin", position_sin)
 
     # Method to perform a specific rotation operation on a tensor 'x'
     def _rotate_half(self, x: Tensor) -> Tensor:
@@ -37,31 +39,12 @@ class RotaryPositionalEncoding():
         x1, x2 = x[..., : self.dim_emb // 2], x[..., self.dim_emb // 2 :]
 
         # Concatenate '(-x2, x1)' along the last dimension and return result
-        return (-x2).cat(x1, dim=-1)
+        return Tensor.cat((-x2, x1), dim=-1)
 
     # Method to apply rotary positional encodings to the input tensor 'x'
     def __call__(self, x: Tensor) -> Tensor:
         # x is of shape  (bs, num_heads, seq_len, dim_emb)
         x = (x * self.position_cos) + (self._rotate_half(x) * self.position_sin)
-
-        return x
-
-
-# Implements RMS normalization for tensors
-class RMSNorm():
-    # RMSnorm(x_i) = (x_i / RMS(x)) * g_i where RMS(x) = sqrt(1 / n *  sum a_i ** 2)
-    # Initialize scaling factor, gain params, and epsilon
-    def __init__(self, dim_last: int, eps: float = EPS):
-        super().__init__()
-        self.scale = dim_last**0.5
-        self.gain = Tensor.ones(dim_last, requires_grad=True)
-        self.eps = eps
-
-    # Method to apply RMS normalization to input tensor 'x'
-    def __call__(self, x: Tensor) -> Tensor:
-        squared_norm = (x ** 2).sum(axis=-1, keepdim=True)
-        norm = Tensor.sqrt(squared_norm)
-        x = self.scale * self.gain * x / (norm + self.eps)
 
         return x
 
@@ -74,13 +57,13 @@ class SwiGLU():
         super().__init__()
 
         self.dim_in = dim_in
-        self.linear = nn.Linear(dim_in, 2 * dim_in, bias=bias)
+        self.linear = Linear(dim_in, 2 * dim_in, bias=bias)
 
     # Method to apply SwiGLU activation to input tensor 'x'
     def __call__(self, x: Tensor) -> Tensor:
         # uses only one weight matrix instead of two
         x = self.linear(x)
-        x = Tensor.silu(x[..., : self.dim_in]) + x[..., self.dim_in :]
+        x = F.silu(x[..., : self.dim_in]) + x[..., self.dim_in :]
 
         return x
 
@@ -107,11 +90,11 @@ class MultiHeadAttention():
         self.positional_encoding = RotaryPositionalEncoding(seq_len, dim_emb // num_heads)
 
         # Query, Key and Value projections batched into one linear layer
-        self.proj_qkv = nn.Linear(dim_emb, 3 * dim_emb, bias=False)
-        self.proj_out = nn.Linear(self.dim_v, self.dim_v, bias=False)
+        self.proj_qkv = Linear(dim_emb, 3 * dim_emb, bias=False)
+        self.proj_out = Linear(self.dim_v, self.dim_v, bias=False)
 
         # Build the causal mask, masking upper triangular part of attention scores
-        self.causal_mask = Tensor.triu(Tensor.ones(seq_len, seq_len), diagonal=1) > 0
+        self.register_buffer("causal_mask", Tensor.triu(Tensor.ones(seq_len, seq_len), diagonal=1).bool())
 
     # Method to perform forward pass of MultiHeadAttention layer
     def __call__(self, x: Tensor, return_scores: bool = False) -> Tensor | Tuple[Tensor, Tensor]:
@@ -122,9 +105,9 @@ class MultiHeadAttention():
         q, k, v = qkv.chunk(3, dim=-1)  # (bs, seq_len, dim_k), (bs, seq_len, dim_k), (bs, seq_len, dim_v)
 
         # split projections between heads -> (bs, num_heads, seq_len, dim_k)
-        q = q.reshape(q.shape[0], self.seq_len, self.num_heads, self.dim_head).permute(0, 2, 1, 3)
-        k = k.reshape(k.shape[0], self.seq_len, self.num_heads, self.dim_head).permute(0, 2, 1, 3)
-        v = v.reshape(v.shape[0], self.seq_len, self.num_heads, self.dim_head).permute(0, 2, 1, 3)
+        q = q.view(-1, self.seq_len, self.num_heads, self.dim_head).permute(0, 2, 1, 3)
+        k = k.view(-1, self.seq_len, self.num_heads, self.dim_head).permute(0, 2, 1, 3)
+        v = v.view(-1, self.seq_len, self.num_heads, self.dim_head).permute(0, 2, 1, 3)
 
         # apply positional encoding to projections, for each heads
         q = self.positional_encoding(q)  # (bs, num_heads, seq_len, dim_k)
@@ -135,14 +118,14 @@ class MultiHeadAttention():
 
         # Fill the upper triangular part of the attention scores with -inf to inhibit them in the softmax
         if self.causal:
-            attn_scores.masked_fill(self.causal_mask[None, None, ...], -np.inf)
+            attn_scores.masked_fill_(self.causal_mask[None, None, ...], -Tensor.inf)
 
         # attention scores are used to build a weighted linear combination of values vectors
-        attn_scores = Tensor.softmax(attn_scores, axis=-1)  # (bs, num_heads, seq_len, seq_len)
+        attn_scores = Tensor.softmax(attn_scores, dim=-1)  # (bs, num_heads, seq_len, seq_len)
         out = attn_scores @ v  # (bs, num_heads, seq_len, dim_v)
 
         # Merge heads by reshaping and permuting output tensor
-        out = out.permute(0, 2, 1, 3).reshape(-1, self.seq_len, self.dim_v)  # (bs, seq_len, dim_v)
+        out = out.permute(0, 2, 1, 3).contiguous().view(-1, self.seq_len, self.dim_v)  # (bs, seq_len, dim_v)
 
         # projects to the output space
         out = self.proj_out(out)  # (bs, seq_len, dim_v)
@@ -154,14 +137,16 @@ class MultiHeadAttention():
             return out
 
 
-# Defines a feedforward nn layer using 'Sequential' to chain together multiple layers
+# Defines a feedforward nn layer sequentially
 class FeedForward():
     # Method to initialize the feed forward layer with params
     def __init__(self, dim_in: int, dim_hidden: int, bias: bool = False) -> None:
-        super().__init__()
-        self.linear1 = nn.Linear(dim_in, dim_hidden, bias=bias)
+        # First Linear layer
+        self.linear1 = Linear(dim_in, dim_hidden, bias=bias)
+        # SwiGLU activation
         self.swiglu = SwiGLU(dim_hidden)
-        self.linear2 = nn.Linear(dim_hidden, dim_in, bias=bias)
+        # Second Linear layer
+        self.linear2 = Linear(dim_hidden, dim_in, bias=bias)
 
     def __call__(self, x: Tensor) -> Tensor:
         x = self.linear1(x)
@@ -170,7 +155,7 @@ class FeedForward():
         return x
 
 
-# Defines transformer block that includes multi-head attention, feedforward layers, and normalization
+# Defines transformer block that includes multi-head attention, feed forward layers, and normalization
 class TransformerBlock():
     # Method to initialize the TransformerBlock with params
     def __init__(
@@ -187,7 +172,8 @@ class TransformerBlock():
         # Follows LLama 2 architecture:
         # - positional encoding on every head of the multi-head attention query and keys projections
         # - RMS pre-normalization instead of layer normalization
-        # - SwiGLU activation for the feedforward
+        # - SwiGLU activation for the feed__call__
+
         self.norm_attn = RMSNorm(dim_emb)
         self.multihead_attn = MultiHeadAttention(seq_len, attn_num_heads, dim_emb, causal=attn_causal)
         self.norm_ffn = RMSNorm(dim_emb)
@@ -196,4 +182,7 @@ class TransformerBlock():
     # Method to perform forward pass of TransformerBlock
     def __call__(self, x: Tensor) -> Tensor:
         x = x + self.multihead_attn(self.norm_attn(x))  # (bs, seq_len, dim_in)
-        return x + self.feed_forward(self.norm_ffn(x))  # (bs, seq_len, dim_in)
+        x = x + self.feed_forward(self.norm_ffn(x))  # (bs, seq_len, dim_in)
+
+        # Return transformed tensor
+        return x  # (bs, seq_len, dim_in)

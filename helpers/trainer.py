@@ -6,6 +6,7 @@ from tinygrad.nn.optim import Adam
 from tinygrad.nn.state import get_parameters
 from helpers.dataloader import DataLoader
 import math
+from tinygrad.nn.state import get_state_dict
 
 
 def log(step, max_steps, lr, metrics):
@@ -34,7 +35,8 @@ def train(
 
     metrics_tracker = defaultdict(list)
     Tensor.training = True
-    optimizer = Adam(get_parameters(model), lr=10 * lr)
+    trainable_params = [p for p in get_parameters(model) if getattr(p, 'requires_grad', False)]
+    optimizer = Adam(trainable_params, lr=10 * lr)
 
     for epoch in range(max_epochs):
         print(f"Epoch {epoch + 1}/{max_epochs}:")
@@ -50,10 +52,9 @@ def train(
             loss = logits.reshape(-1, logits.shape[-1]).sparse_categorical_crossentropy(labels.flatten())
             loss.backward()
 
-            # Debugging: Check which parameters do not have gradients
-            for param in get_parameters(model):
+            for name, param in get_state_dict(model).items():
                 if param.grad is None:
-                    print(f"Parameter {param} has no gradient")
+                    print(f"Parameter {name} shape: {param.shape}, type: {param.dtype}, requires_grad: {param.requires_grad}")
                 
             optimizer.step()
 

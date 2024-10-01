@@ -1,6 +1,6 @@
-from tinygrad import Tensor, nn
-from tinygrad.nn import Embedding, Linear
-from model.transformer import RMSNorm, TransformerBlock
+from tinygrad import Tensor
+from tinygrad.nn import Embedding, Linear, RMSNorm
+from model.transformer import TransformerBlock
 
 # Function that takes probabilities and a threshold for top-p sampling
 def sample_top_p(probs: Tensor, threshold: float) -> Tensor:
