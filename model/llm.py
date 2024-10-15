@@ -57,7 +57,7 @@ class LLM:
         # Weight tying links embedding layer and output projection together to share parameters
         # Which can enhance training efficiency and model performance
         # https://paperswithcode.com/method/weight-tying
-        self.token_embedding.weight = self.projection_head.weight
+        #self.token_embedding.weight = self.projection_head.weight
 
     # Method defining the data flow through the model during the forward pass
     def __call__(self, x: Tensor) -> Tensor:
@@ -93,7 +93,7 @@ class LLM:
 
             # get logits for the last step only, and rescale them to get a probability distribution over the vocabulary
             logits = self(inputs_cond)[:, -1, :]  # (bs, vocab_size)
-            probs = F.softmax(logits / temperature, dim=-1)  # (bs, vocab_size)
+            probs = (logits / temperature).softmax(axis=-1)  # (bs, vocab_size)
 
             # sample the next token index using top-p sampling
             next_token = sample_top_p(probs, top_p)  # (bs, 1)

@@ -7,6 +7,7 @@ from tinygrad.nn.state import get_parameters
 from helpers.dataloader import DataLoader
 import math
 from tinygrad.nn.state import get_state_dict
+from tinygrad import TinyJit
 
 
 def log(step, max_steps, lr, metrics):
@@ -23,6 +24,7 @@ def apply_weight_decay(model, weight_decay):
         param.assign(param - param * weight_decay)
 
 
+@TinyJit
 def train(
     model,
     dl_train: DataLoader,
@@ -35,7 +37,8 @@ def train(
 
     metrics_tracker = defaultdict(list)
     Tensor.training = True
-    trainable_params = [p for p in get_parameters(model) if getattr(p, 'requires_grad', False)]
+    # Filter out what would have been buffers in PyTorch (params you don't train)
+    trainable_params = [param for name, param in get_state_dict(model).items() if "weight" in name]
     optimizer = Adam(trainable_params, lr=10 * lr)
 
     for epoch in range(max_epochs):
@@ -52,14 +55,19 @@ def train(
             loss = logits.reshape(-1, logits.shape[-1]).sparse_categorical_crossentropy(labels.flatten())
             loss.backward()
 
-            for name, param in get_state_dict(model).items():
-                if param.grad is None:
-                    print(f"Parameter {name} shape: {param.shape}, type: {param.dtype}, requires_grad: {param.requires_grad}")
-                
             optimizer.step()
+
+            # Debugging: Print gradients after optimizer step
+            print("After optimizer step:")
+            for name, param in get_state_dict(model).items():
+                if param.requires_grad:
+                    print(f"Parameter {name} grad: {param.grad}")
 
             # Manually apply weight decay
             apply_weight_decay(model, weight_decay)
+
+            for param in model.parameters():
+                print(f"Parameter after weight decay: {param[:5]}")  # Print first 5 elements
 
             metrics_tracker["train_loss"].append(loss.numpy().item())
             if step % log_every == 0 or step == len(dl_train) - 1:
